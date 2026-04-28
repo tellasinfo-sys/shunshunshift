@@ -15,7 +15,7 @@
   --mgr:#e94560;--staff:#3b82f6;--part:#10b981;
   --r:8px;--r2:12px;
 }
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(--tx);min-height:100vh;font-size:14px;line-height:1.5}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(--tx);min-height:100vh;font-size:14px;line-height:1.5;-webkit-text-size-adjust:100%}
 /* ===== LAYOUT ===== */
 .app{display:flex;height:100vh;overflow:hidden}
 .sidebar{width:200px;background:var(--mg2);border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0;transition:transform 0.25s;z-index:50}
@@ -152,6 +152,14 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
 .loading-txt{font-size:13px;color:var(--tx2)}
 /* ===== YM BAR ===== */
 #ym-bar{display:none;align-items:center;gap:8px;padding:10px 16px;background:var(--mg2);border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.mgr-only-btn{display:none}
+.is-mgr .mgr-only-btn{display:inline-block}
+@media(max-width:700px){
+  .mgr-only-btn{min-height:44px;padding:8px 14px;font-size:12px;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+  .btn{min-height:40px;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+  #ym-bar select{min-height:40px;font-size:14px}
+  .ng-mark{width:28px;height:28px;line-height:28px;font-size:15px}
+}
 </style>
 </head>
 <body>
@@ -251,7 +259,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
             <span class="section-title">シフト設定</span>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               <button class="btn btn-secondary btn-sm" onclick="autoFill()">自動配置</button>
-              <button class="btn btn-secondary btn-sm" onclick="resetShiftConfirm()" style="background:rgba(233,69,96,0.1);border-color:rgba(233,69,96,0.3);color:var(--ac)">🗑 シフトリセット</button>
+              <button class="btn btn-secondary btn-sm mgr-only-btn" onclick="resetShiftConfirm()" style="background:rgba(233,69,96,0.1);border-color:rgba(233,69,96,0.3);color:var(--ac)">🗑 シフトリセット</button>
               <button class="btn btn-primary btn-sm" onclick="confirmShift()">シフト確定</button>
             </div>
           </div>
@@ -272,8 +280,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
       <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px">
         <div><div class="page-title">確定シフト</div><div class="page-sub" id="shift-sub"></div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-secondary btn-sm" id="excel-btn" onclick="exportExcel()" style="display:none;align-items:center;gap:6px;background:rgba(46,204,113,0.15);border-color:rgba(46,204,113,0.3);color:#6ee7b7">📥 Excelで出力</button>
-          <button class="btn btn-secondary btn-sm" id="reset-btn" onclick="resetShiftConfirm()" style="display:none;align-items:center;gap:6px;background:rgba(233,69,96,0.1);border-color:rgba(233,69,96,0.3);color:var(--ac)">🗑 シフトリセット</button>
+          <button class="btn btn-secondary btn-sm mgr-only-btn" id="excel-btn" onclick="exportExcel()" style="background:rgba(46,204,113,0.15);border-color:rgba(46,204,113,0.3);color:#6ee7b7">📥 Excelで出力</button>
+          <button class="btn btn-secondary btn-sm mgr-only-btn" id="reset-btn" onclick="resetShiftConfirm()" style="background:rgba(233,69,96,0.1);border-color:rgba(233,69,96,0.3);color:var(--ac)">🗑 シフトリセット</button>
         </div>
       </div>
       <div class="legend">
@@ -895,11 +903,12 @@ window.confirmShift = async function(){
 function renderShift(){
   document.getElementById('shift-sub').textContent = ym()+'の確定シフト';
   const isMgr=currentProfile?.role==='店長', myId=currentUser?.uid;
-  // Excelボタン・リセットボタンは店長のみ表示
-  const excelBtn=document.getElementById('excel-btn');
-  if(excelBtn) excelBtn.style.display=isMgr?'flex':'none';
-  const resetBtn=document.getElementById('reset-btn');
-  if(resetBtn) resetBtn.style.display=isMgr?'flex':'none';
+  // Excelボタン・リセットボタンは店長のみ表示（CSSクラスで制御）
+  if(isMgr){
+    document.getElementById('main-app').classList.add('is-mgr');
+  } else {
+    document.getElementById('main-app').classList.remove('is-mgr');
+  }
   const notice=document.getElementById('my-shift-notice');
   if(!isMgr){
     notice.style.display='block';
