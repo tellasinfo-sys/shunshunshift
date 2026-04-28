@@ -251,6 +251,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
             <span class="section-title">シフト設定</span>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               <button class="btn btn-secondary btn-sm" onclick="autoFill()">自動配置</button>
+              <button class="btn btn-secondary btn-sm" onclick="resetShiftConfirm()" style="background:rgba(233,69,96,0.1);border-color:rgba(233,69,96,0.3);color:var(--ac)">🗑 シフトリセット</button>
               <button class="btn btn-primary btn-sm" onclick="confirmShift()">シフト確定</button>
             </div>
           </div>
@@ -268,7 +269,13 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
 
     <!-- 確定シフト -->
     <div id="page-shift" class="page">
-      <div class="page-header"><div class="page-title">確定シフト</div><div class="page-sub" id="shift-sub"></div></div>
+      <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div><div class="page-title">確定シフト</div><div class="page-sub" id="shift-sub"></div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" id="excel-btn" onclick="exportExcel()" style="display:none;align-items:center;gap:6px;background:rgba(46,204,113,0.15);border-color:rgba(46,204,113,0.3);color:#6ee7b7">📥 Excelで出力</button>
+          <button class="btn btn-secondary btn-sm" id="reset-btn" onclick="resetShiftConfirm()" style="display:none;align-items:center;gap:6px;background:rgba(233,69,96,0.1);border-color:rgba(233,69,96,0.3);color:var(--ac)">🗑 シフトリセット</button>
+        </div>
+      </div>
       <div class="legend">
         <span><span class="dot dot-mgr"></span>店長</span>
         <span><span class="dot dot-staff"></span>社員</span>
@@ -390,6 +397,32 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal('staff-modal')">キャンセル</button>
       <button class="btn btn-primary" onclick="addStaff()">追加</button>
+    </div>
+  </div>
+</div>
+
+<!-- リセット確認モーダル -->
+<div class="modal-overlay" id="reset-modal">
+  <div class="modal">
+    <div class="modal-title" style="color:var(--ac)">⚠ シフトリセット</div>
+    <p style="font-size:13px;color:var(--tx2);margin-bottom:12px">対象月を選択してリセットしてください。</p>
+    <div class="form-group">
+      <label class="form-label">リセット対象</label>
+      <select class="form-select" id="reset-target">
+        <option value="month">現在の月（<span id="reset-ym-label"></span>）のシフトをすべて削除</option>
+        <option value="staff">特定のスタッフのみ削除</option>
+      </select>
+    </div>
+    <div class="form-group" id="reset-staff-group" style="display:none">
+      <label class="form-label">対象スタッフ</label>
+      <select class="form-select" id="reset-staff-sel"></select>
+    </div>
+    <div style="padding:10px 12px;border-radius:var(--r);background:rgba(233,69,96,0.08);border:1px solid rgba(233,69,96,0.2);font-size:12px;color:var(--ac);margin-bottom:4px">
+      ⚠ この操作は元に戻せません。削除したシフトデータは復元できません。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('reset-modal')">キャンセル</button>
+      <button class="btn btn-primary" onclick="executeReset()" style="background:var(--ac)">リセット実行</button>
     </div>
   </div>
 </div>
@@ -837,6 +870,11 @@ window.confirmShift = async function(){
 function renderShift(){
   document.getElementById('shift-sub').textContent = ym()+'の確定シフト';
   const isMgr=currentProfile?.role==='店長', myId=currentUser?.uid;
+  // Excelボタン・リセットボタンは店長のみ表示
+  const excelBtn=document.getElementById('excel-btn');
+  if(excelBtn) excelBtn.style.display=isMgr?'flex':'none';
+  const resetBtn=document.getElementById('reset-btn');
+  if(resetBtn) resetBtn.style.display=isMgr?'flex':'none';
   const notice=document.getElementById('my-shift-notice');
   if(!isMgr){
     notice.style.display='block';
@@ -958,6 +996,84 @@ function renderHistory(){
   }).join('') || '<div style="color:var(--tx2);padding:12px;font-size:12px">履歴なし</div>';
 }
 
+
+// ===== Excel出力 =====
+window.exportExcel = function(){
+  const isMgr = currentProfile?.role === '店長';
+  const myId = currentUser?.uid;
+  const targets = isMgr ? staffList : staffList.filter(s => s.uid === myId);
+
+  // CSVデータ作成
+  const rows = [];
+
+  // ヘッダー行1：タイトル
+  rows.push([ym() + ' シフト表']);
+  rows.push([]);
+
+  // ヘッダー行2：日付行
+  const dateHeader = ['氏名', '区分'];
+  for(let d = 1; d <= DIM(); d++){
+    const dw = new Date(CUR_YEAR, CUR_MONTH-1, d).getDay();
+    dateHeader.push(d + '(' + DAYS[dw] + ')');
+  }
+  dateHeader.push('出勤日数', '合計時間');
+  rows.push(dateHeader);
+
+  // スタッフ行
+  targets.forEach(s => {
+    const row = [s.name, s.role];
+    let days = 0, totalMin = 0;
+    for(let d = 1; d <= DIM(); d++){
+      const shift = shiftsCache[shiftDocId(s.uid, d)] || '';
+      row.push(shift);
+      if(shift){ days++; totalMin += shiftMinutes(shift); }
+    }
+    const totalH = Math.round(totalMin / 6) / 10;
+    row.push(days + '日', totalH + 'h');
+    rows.push(row);
+  });
+
+  // 空行
+  rows.push([]);
+
+  // 勤務時間サマリー
+  rows.push(['【勤務時間サマリー】']);
+  rows.push(['氏名', '区分', '社保', '合計時間', '上限', '状態']);
+  targets.forEach(s => {
+    const isPN = s.role === 'パート・アルバイト' && s.social === '非対象';
+    const curr = isPN ? calcMonthHours(s.uid) : calcWeekHours(s.uid);
+    const limit = isPN ? 82 : 44;
+    const unit = isPN ? '月' : '週換算';
+    const status = curr > limit ? '⚠超過' : curr > limit * 0.9 ? '注意' : '正常';
+    rows.push([s.name, s.role, s.social, unit + curr + 'h', limit + 'h', status]);
+  });
+
+  // CSV文字列に変換（BOM付きUTF-8でExcelが文字化けしないように）
+  const csv = '﻿' + rows.map(row =>
+    row.map(cell => {
+      const str = String(cell);
+      // カンマや改行を含む場合はダブルクォートで囲む
+      return str.includes(',') || str.includes('
+') || str.includes('"')
+        ? '"' + str.replace(/"/g, '""') + '"'
+        : str;
+    }).join(',')
+  ).join('
+');
+
+  // ダウンロード
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = CUR_YEAR + '年' + CUR_MONTH + '月_シフト表.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+// 確定シフトページを開いたときExcelボタンを表示（店長のみ）
 updateSocialOption();
 </script>
 </body>
