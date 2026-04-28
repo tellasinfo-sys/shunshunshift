@@ -209,7 +209,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
       <span class="mobile-title" id="mobile-page-title">ダッシュボード</span>
     </div>
     <div id="ym-bar">
-      <span style="font-size:12px;color:var(--tx2);flex-shrink:0">対象年月：</span>
+      <span style="font-size:12px;color:var(--tx2);flex-shrink:0">シフト開始月：</span>
       <select id="sel-year" class="form-select" style="width:auto;padding:5px 10px;font-size:13px" onchange="changeYM()"></select>
       <select id="sel-month" class="form-select" style="width:auto;padding:5px 10px;font-size:13px" onchange="changeYM()"></select>
       <span id="ym-label" style="font-size:12px;color:var(--tx2);margin-left:4px"></span>
@@ -458,10 +458,29 @@ let historyCache = [];
 let _sid = null, _day = null;
 let unsubShifts = null, unsubWishes = null, unsubHistory = null;
 
-function DIM(){ return new Date(CUR_YEAR, CUR_MONTH, 0).getDate(); }
-function ym(){ return CUR_YEAR + '年' + CUR_MONTH + '月'; }
-function shiftDocId(staffId, d){ return CUR_YEAR+'-'+CUR_MONTH+'-'+staffId+'-'+d; }
-function wishDocId(staffId){ return CUR_YEAR+'-'+CUR_MONTH+'-'+staffId; }
+// シフト期間: CUR_YEAR/CUR_MONTH/15 〜 翌月14日
+function getPeriod(){
+  const start=new Date(CUR_YEAR,CUR_MONTH-1,15);
+  let ey=CUR_YEAR,em=CUR_MONTH+1;
+  if(em>12){em=1;ey++;}
+  return {start,end:new Date(ey,em-1,14)};
+}
+function DIM(){
+  const {start,end}=getPeriod();
+  return Math.round((end-start)/(1000*60*60*24))+1;
+}
+function getDateByOffset(i){
+  const d=new Date(getPeriod().start);
+  d.setDate(d.getDate()+i);
+  return d;
+}
+function ym(){
+  const {start,end}=getPeriod();
+  return CUR_YEAR+'年'+CUR_MONTH+'月シフト（'+(start.getMonth()+1)+'/'+start.getDate()+'〜'+(end.getMonth()+1)+'/'+end.getDate()+'）';
+}
+function ymShort(){ return CUR_YEAR+'-'+CUR_MONTH; }
+function shiftDocId(staffId,i){ return ymShort()+'-'+staffId+'-'+i; }
+function wishDocId(staffId){ return ymShort()+'-wish-'+staffId; }
 
 // ===== ユーティリティ =====
 function rc(r){ return r==='店長'?'mgr':r==='社員'?'staff':'part'; }
@@ -599,13 +618,13 @@ function rerenderCurrentPage(){
 }
 
 async function saveShift(staffId, day, timeStr){
-  await setDoc(doc(db,'shifts', shiftDocId(staffId,day)), { time: timeStr, staffId, day, year: CUR_YEAR, month: CUR_MONTH, updatedAt: serverTimestamp() });
+  await setDoc(doc(db,'shifts', shiftDocId(staffId,day)), { time: timeStr, staffId, offset: day, ym: ymShort(), updatedAt: serverTimestamp() });
 }
 async function removeShiftDoc(staffId, day){
-  await setDoc(doc(db,'shifts', shiftDocId(staffId,day)), { time: null, staffId, day, year: CUR_YEAR, month: CUR_MONTH, updatedAt: serverTimestamp() });
+  await setDoc(doc(db,'shifts', shiftDocId(staffId,day)), { time: null, staffId, offset: day, ym: ymShort(), updatedAt: serverTimestamp() });
 }
 async function saveWish(staffId, days){
-  await setDoc(doc(db,'wishes', wishDocId(staffId)), { days, staffId, year: CUR_YEAR, month: CUR_MONTH, updatedAt: serverTimestamp() });
+  await setDoc(doc(db,'wishes', wishDocId(staffId)), { days, staffId, ym: ymShort(), updatedAt: serverTimestamp() });
 }
 async function addHistory(type, title, detail){
   await addDoc(collection(db,'history'), { type, title, detail, author: currentProfile?.name||'', createdAt: serverTimestamp() });
@@ -654,7 +673,8 @@ function setupYMBar(){
     msel.appendChild(o);
   }
   updateMonthOptions();
-  document.getElementById('ym-label').textContent = '（'+DIM()+'日間）';
+  const {start,end}=getPeriod();
+  document.getElementById('ym-label').textContent = (start.getMonth()+1)+'/'+start.getDate()+'〜'+(end.getMonth()+1)+'/'+end.getDate()+'（'+DIM()+'日間）';
 }
 function updateMonthOptions(){
   const y = parseInt(document.getElementById('sel-year').value);
@@ -671,7 +691,8 @@ window.changeYM = function(){
   updateMonthOptions();
   CUR_YEAR = parseInt(document.getElementById('sel-year').value);
   CUR_MONTH = parseInt(document.getElementById('sel-month').value);
-  document.getElementById('ym-label').textContent = '（'+DIM()+'日間）';
+  const {start,end}=getPeriod();
+  document.getElementById('ym-label').textContent = (start.getMonth()+1)+'/'+start.getDate()+'〜'+(end.getMonth()+1)+'/'+end.getDate()+'（'+DIM()+'日間）';
   rerenderCurrentPage();
 };
 
@@ -689,9 +710,11 @@ window.showPage = function(id){
 function calHead(){
   let h='<thead><tr><th></th>';
   for(let i=0;i<DIM();i++){
-    const d=i+1, dw=new Date(CUR_YEAR,CUR_MONTH-1,d).getDay();
+    const dt=getDateByOffset(i);
+    const dw=dt.getDay();
     const cls=dw===0?'sun':dw===6?'sat':'';
-    h+='<th class="'+cls+'">'+d+'<br><span style="font-size:8px">'+DAYS[dw]+'</span></th>';
+    const label=(dt.getMonth()+1)+'/'+(dt.getDate());
+    h+='<th class="'+cls+'">'+label+'<br><span style="font-size:8px">'+DAYS[dw]+'</span></th>';
   }
   return h+'</tr></thead>';
 }
@@ -702,8 +725,8 @@ function renderDash(){
   document.getElementById('dash-sub').textContent = ym()+'のシフト状況';
   const myId = currentUser?.uid;
   const myStaff = staffList.find(s=>s.uid===myId);
-  const shiftCount = Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(CUR_YEAR+'-'+CUR_MONTH+'-')&&v).length;
-  const myShiftCount = Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(CUR_YEAR+'-'+CUR_MONTH+'-'+myId+'-')&&v).length;
+  const shiftCount = Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(ymShort()+'-')&&v).length;
+  const myShiftCount = Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(ymShort()+'-'+myId+'-')&&v).length;
   const overCount = staffList.filter(s=>{
     const isPN=s.role==='パート・アルバイト'&&s.social==='非対象';
     const curr=isPN?calcMonthHours(s.uid):calcWeekHours(s.uid);
@@ -714,7 +737,7 @@ function renderDash(){
     {label:'在籍スタッフ',val:staffList.length+'名',note:'うち店長1名',cls:''},
     {label:'今月確定シフト',val:shiftCount+'件',note:ym()+'分',cls:'ok-card'},
     {label:'時間超過アラート',val:overCount+'件',note:overCount>0?'要対応':'問題なし',cls:overCount>0?'alert-card':'ok-card'},
-    {label:'希望提出',val:Object.keys(wishesCache).filter(k=>k.startsWith(CUR_YEAR+'-'+CUR_MONTH+'-')).length+'/'+staffList.length+'名',note:'提出済み',cls:'ok-card'},
+    {label:'希望提出',val:Object.keys(wishesCache).filter(k=>k.startsWith(ymShort()+'-wish-')).length+'/'+staffList.length+'名',note:'提出済み',cls:'ok-card'},
   ] : [
     {label:'今月の出勤日数',val:myShiftCount+'日',note:ym()+'分',cls:''},
     {label:'今月の勤務時間',val:calcMonthHours(myId)+'h',note:ym(),cls:'ok-card'},
@@ -760,9 +783,10 @@ function renderWish(){
   document.getElementById('wish-sub').textContent = '出勤不可日に × をつけてください（'+ym()+'）';
   document.getElementById('wish-target-name').textContent = (currentProfile?.name||'')+' さんの希望休';
   let h = calHead()+'<tbody><tr><td style="font-size:10px;color:var(--tx2);padding:4px 6px;white-space:nowrap">希望休</td>';
-  for(let d=1;d<=DIM();d++){
-    const ng=myWishes.includes(d), dw=new Date(CUR_YEAR,CUR_MONTH-1,d).getDay(), wk=dw===0||dw===6?'weekend':'';
-    h+='<td class="'+wk+'"><span class="ng-mark '+(ng?'active':'')+'" onclick="toggleWish('+d+')">'+(ng?'×':'')+'</span></td>';
+  for(let i=0;i<DIM();i++){
+    const dt=getDateByOffset(i), dw=dt.getDay(), wk=dw===0||dw===6?'weekend':'';
+    const ng=myWishes.includes(i);
+    h+='<td class="'+wk+'"><span class="ng-mark '+(ng?'active':'')+'" onclick="toggleWish('+i+')">'+(ng?'×':'')+'</span></td>';
   }
   document.getElementById('wish-cal').innerHTML = h+'</tr></tbody>';
 }
@@ -786,20 +810,21 @@ window.submitWish = async function(){
 // ===== シフト作成 =====
 function renderCreate(){
   document.getElementById('create-sub').textContent = ym()+'　希望休を確認しながら出退勤時間を設定してください';
-  const days=Array.from({length:DIM()},(_,i)=>i+1);
+  const totalDays=DIM();
   let w='<thead><tr><th>氏名</th>';
-  days.forEach(d=>{
-    const dw=new Date(CUR_YEAR,CUR_MONTH-1,d).getDay();
+  for(let i=0;i<totalDays;i++){
+    const dt=getDateByOffset(i), dw=dt.getDay();
     const cls=dw===0?'style="color:#f87171"':dw===6?'style="color:#60a5fa"':'';
-    w+='<th '+cls+' style="font-size:9px;padding:3px 1px">'+d+'</th>';
-  });
+    const label=(dt.getMonth()+1)+'/'+(dt.getDate());
+    w+='<th '+cls+' style="font-size:9px;padding:3px 1px">'+label+'</th>';
+  }
   w+='</tr></thead><tbody>';
   staffList.forEach(s=>{
     w+='<tr><td style="white-space:nowrap;font-size:10px;padding:4px 6px"><span class="dot dot-'+rc(s.role)+'"></span>'+s.name+'</td>';
-    days.forEach(d=>{
-      const ng=(wishesCache[wishDocId(s.uid)]||[]).includes(d);
+    for(let i=0;i<totalDays;i++){
+      const ng=(wishesCache[wishDocId(s.uid)]||[]).includes(i);
       w+='<td>'+(ng?'<span style="color:var(--ac);font-weight:700;font-size:10px">×</span>':'')+'</td>';
-    });
+    }
     w+='</tr>';
   });
   document.getElementById('wish-overview').innerHTML = w+'</tbody>';
@@ -832,8 +857,8 @@ window.openTM = function(staffId, day){
   const s=staffList.find(x=>x.uid===staffId);
   const existing=shiftsCache[shiftDocId(staffId,day)];
   const ng=(wishesCache[wishDocId(staffId)]||[]).includes(day);
-  const dw=new Date(CUR_YEAR,CUR_MONTH-1,day).getDay();
-  document.getElementById('time-modal-title').textContent=(s?.name||'')+' ／ '+CUR_MONTH+'月'+day+'日（'+DAYS[dw]+'）';
+  const _dt=getDateByOffset(day), _dw=_dt.getDay();
+  document.getElementById('time-modal-title').textContent=(s?.name||'')+' ／ '+(_dt.getMonth()+1)+'/'+_dt.getDate()+'（'+DAYS[_dw]+'）';
   if(existing){ const p=existing.split('〜'); document.getElementById('t-start').value=p[0]||'10:00'; document.getElementById('t-end').value=p[1]||'17:00'; }
   else{ document.getElementById('t-start').value='10:00'; document.getElementById('t-end').value='17:00'; }
   document.getElementById('time-modal-warn').style.display=ng?'block':'none';
@@ -854,9 +879,9 @@ window.autoFill = async function(){
   const pre=['09:00〜14:00','10:00〜15:00','11:00〜16:00','12:00〜17:00','15:00〜20:00','10:00〜17:00','11:00〜20:00'];
   const writes=[];
   staffList.forEach(s=>{
-    for(let d=1;d<=DIM();d++){
-      const ng=(wishesCache[wishDocId(s.uid)]||[]).includes(d), dw=new Date(CUR_YEAR,CUR_MONTH-1,d).getDay();
-      if(!ng&&dw!==0&&Math.random()>0.35) writes.push(saveShift(s.uid,d,pre[Math.floor(Math.random()*pre.length)]));
+    for(let i=0;i<DIM();i++){
+      const ng=(wishesCache[wishDocId(s.uid)]||[]).includes(i), dw=getDateByOffset(i).getDay();
+      if(!ng&&dw!==0&&Math.random()>0.35) writes.push(saveShift(s.uid,i,pre[Math.floor(Math.random()*pre.length)]));
     }
   });
   await Promise.all(writes);
@@ -878,7 +903,7 @@ function renderShift(){
   const notice=document.getElementById('my-shift-notice');
   if(!isMgr){
     notice.style.display='block';
-    const cnt=Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(CUR_YEAR+'-'+CUR_MONTH+'-'+myId+'-')&&v).length;
+    const cnt=Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(ymShort()+'-'+myId+'-')&&v).length;
     notice.innerHTML='<div style="font-size:12px;font-weight:500;margin-bottom:4px">あなたのシフト（'+(currentProfile?.name||'')+'）</div>'
       +'<div style="font-size:11px;color:var(--tx2)">今月の出勤：'+cnt+'日　／　合計：'+calcMonthHours(myId)+'h</div>';
   } else notice.style.display='none';
@@ -886,8 +911,8 @@ function renderShift(){
   (isMgr?staffList:staffList.filter(s=>s.uid===myId)).forEach(s=>{
     const rk=rc(s.role);
     h+='<tr><td style="font-size:10px;white-space:nowrap;padding:3px 5px"><span class="dot dot-'+rk+'"></span>'+s.name.split(' ')[0]+'</td>';
-    for(let d=1;d<=DIM();d++){
-      const shift=shiftsCache[shiftDocId(s.uid,d)], dw=new Date(CUR_YEAR,CUR_MONTH-1,d).getDay(), wk=dw===0||dw===6?'weekend':'';
+    for(let i=0;i<DIM();i++){
+      const shift=shiftsCache[shiftDocId(s.uid,i)], dw=getDateByOffset(i).getDay(), wk=dw===0||dw===6?'weekend':'';
       if(shift){ const p=shift.split('〜'); h+='<td class="'+wk+'"><div class="shift-block sb-'+rk+'">'+p[0]+'<br>'+(p[1]||'')+'</div></td>'; }
       else h+='<td class="'+wk+'"></td>';
     }
@@ -907,19 +932,22 @@ function renderChange(){
 }
 window.openChangeModal = function(){
   document.getElementById('ch-staff').innerHTML=staffList.map(s=>'<option value="'+s.uid+'">'+s.name+'（'+s.role+'）</option>').join('');
-  document.getElementById('ch-date').innerHTML=Array.from({length:DIM()},(_,i)=>'<option value="'+(i+1)+'">'+CUR_MONTH+'月'+(i+1)+'日</option>').join('');
+  document.getElementById('ch-date').innerHTML=Array.from({length:DIM()},(_,i)=>{
+    const dt=getDateByOffset(i); return '<option value="'+i+'">'+(dt.getMonth()+1)+'/'+(dt.getDate())+'（'+DAYS[dt.getDay()]+'）</option>';
+  }).join('');
   document.getElementById('ch-reason').value='';
   document.getElementById('change-modal').classList.add('open');
 };
 window.applyChange = async function(){
   const staffId=document.getElementById('ch-staff').value;
   const staff=staffList.find(s=>s.uid===staffId);
-  const day=parseInt(document.getElementById('ch-date').value);
+  const day=parseInt(document.getElementById('ch-date').value); // offset
   const type=document.getElementById('ch-type').value;
   const start=document.getElementById('ch-start').value, end=document.getElementById('ch-end').value;
   const reason=document.getElementById('ch-reason').value||'理由未記入';
   const tm={add:'出勤追加',remove:'出勤削除',change:'時間変更'};
-  await addHistory('change',(staff?.name||'')+' '+CUR_MONTH+'/'+day+'変更',tm[type]+'：'+start+'〜'+end+'（理由：'+reason+'）');
+  const _chdt=getDateByOffset(day);
+  await addHistory('change',(staff?.name||'')+' '+(_chdt.getMonth()+1)+'/'+_chdt.getDate()+'変更',tm[type]+'：'+start+'〜'+end+'（理由：'+reason+'）');
   if(type==='add'||type==='change') await saveShift(staffId,day,start+'〜'+end);
   if(type==='remove') await removeShiftDoc(staffId,day);
   closeModal('change-modal');
@@ -933,7 +961,7 @@ function renderStaff(){
     const limit=isPN?82:44;
     const curr=isPN?calcMonthHours(s.uid):calcWeekHours(s.uid);
     const pct=Math.min(100,Math.round(curr/limit*100)), over=curr>limit, warn=curr>limit*0.9;
-    const days=Object.entries(shiftsCache).filter(function(e){return e[0].startsWith(CUR_YEAR+'-'+CUR_MONTH+'-'+s.uid+'-')&&e[1];}).length;
+    const days=Object.entries(shiftsCache).filter(function(e){return e[0].startsWith(ymShort()+'-'+s.uid+'-')&&e[1];}).length;
     const fillCls=over?'pf-over':warn?'pf-warn':'pf-ok';
     const badgeCls=over?'ab-over':warn?'ab-warn':'ab-ok';
     const badgeText=over?'⚠超過':warn?'注意':'正常';
@@ -997,78 +1025,75 @@ function renderHistory(){
 }
 
 
-// ===== Excel出力 =====
+// ===== Excel出力（スタッフ別シート形式） =====
 window.exportExcel = function(){
   const isMgr = currentProfile?.role === '店長';
   const myId = currentUser?.uid;
   const targets = isMgr ? staffList : staffList.filter(s => s.uid === myId);
+  const {start, end} = getPeriod();
+  const DAYS_JP = ['日','月','火','水','木','金','土'];
 
-  // CSVデータ作成
-  const rows = [];
+  function pad(n){ return String(n).padStart(2,'0'); }
+  function toTimeStr(t){ return pad(t.hour||0)+':'+pad(t.minute||0); }
 
-  // ヘッダー行1：タイトル
-  rows.push([ym() + ' シフト表']);
-  rows.push([]);
+  // スタッフごとにシートを作るため、全データをワークブック形式でCSVに書く
+  // （ブラウザではXLSX生成ライブラリ不要でCSV出力）
+  // スタッフ別にCSVシートを結合して出力
+  const allCsv = [];
+  const period = (start.getMonth()+1)+'/'+start.getDate()+'〜'+(end.getMonth()+1)+'/'+end.getDate();
 
-  // ヘッダー行2：日付行
-  const dateHeader = ['氏名', '区分'];
-  for(let d = 1; d <= DIM(); d++){
-    const dw = new Date(CUR_YEAR, CUR_MONTH-1, d).getDay();
-    dateHeader.push(d + '(' + DAYS[dw] + ')');
-  }
-  dateHeader.push('出勤日数', '合計時間');
-  rows.push(dateHeader);
-
-  // スタッフ行
   targets.forEach(s => {
-    const row = [s.name, s.role];
-    let days = 0, totalMin = 0;
-    for(let d = 1; d <= DIM(); d++){
-      const shift = shiftsCache[shiftDocId(s.uid, d)] || '';
-      row.push(shift);
-      if(shift){ days++; totalMin += shiftMinutes(shift); }
+    allCsv.push(['=== '+s.name+' ／ '+s.role+' ／ 社保：'+s.social+' ===']);
+    allCsv.push([period+' シフト表']);
+    allCsv.push(['日付','曜日','始業','終業','休憩','所定時間','状態']);
+
+    let totalMin=0, workDays=0;
+    for(let i=0;i<DIM();i++){
+      const dt=getDateByOffset(i);
+      const dw=dt.getDay();
+      const dateStr=(dt.getMonth()+1)+'/'+dt.getDate();
+      const dwStr=DAYS_JP[dw];
+      const shift=shiftsCache[shiftDocId(s.uid,i)];
+      const isNg=(wishesCache[wishDocId(s.uid)]||[]).includes(i);
+
+      if(shift){
+        const parts=shift.split('〜');
+        const sh=parseInt(parts[0].split(':')[0]),sm=parseInt(parts[0].split(':')[1]);
+        const eh=parseInt(parts[1].split(':')[0]),em=parseInt(parts[1].split(':')[1]);
+        const tot=(eh*60+em)-(sh*60+sm);
+        const brk=tot>=480?45:0;
+        const work=tot-brk;
+        const wh=Math.floor(work/60), wm=work%60;
+        const bh=Math.floor(brk/60), bm=brk%60;
+        totalMin+=work; workDays++;
+        allCsv.push([dateStr,dwStr,parts[0],parts[1],pad(bh)+':'+pad(bm),pad(wh)+':'+pad(wm),'出勤']);
+      } else {
+        allCsv.push([dateStr,dwStr,'','','','',isNg?'希望休':'休']);
+      }
     }
-    const totalH = Math.round(totalMin / 6) / 10;
-    row.push(days + '日', totalH + 'h');
-    rows.push(row);
+    const th=Math.floor(totalMin/60), tm=totalMin%60;
+    allCsv.push(['合計',workDays+'日','','','',pad(th)+':'+pad(tm),'']);
+    allCsv.push([]); // 空行
   });
 
-  // 空行
-  rows.push([]);
-
-  // 勤務時間サマリー
-  rows.push(['【勤務時間サマリー】']);
-  rows.push(['氏名', '区分', '社保', '合計時間', '上限', '状態']);
-  targets.forEach(s => {
-    const isPN = s.role === 'パート・アルバイト' && s.social === '非対象';
-    const curr = isPN ? calcMonthHours(s.uid) : calcWeekHours(s.uid);
-    const limit = isPN ? 82 : 44;
-    const unit = isPN ? '月' : '週換算';
-    const status = curr > limit ? '⚠超過' : curr > limit * 0.9 ? '注意' : '正常';
-    rows.push([s.name, s.role, s.social, unit + curr + 'h', limit + 'h', status]);
-  });
-
-  // CSV文字列に変換（BOM付きUTF-8でExcelが文字化けしないように）
-  const csv = '\uFEFF' + rows.map(function(row){
+  const csv = '\uFEFF' + allCsv.map(function(row){
     return row.map(function(cell){
-      const str = String(cell);
-      return str.includes(',') || str.includes('\n') || str.includes('"')
-        ? '"' + str.replace(/"/g, '""') + '"'
-        : str;
+      const str=String(cell===null||cell===undefined?'':cell);
+      return str.includes(',')||str.includes('\n')||str.includes('"')
+        ? '"'+str.replace(/"/g,'""')+'"' : str;
     }).join(',');
   }).join('\n');
 
-  // ダウンロード
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = CUR_YEAR + '年' + CUR_MONTH + '月_シフト表.csv';
-  document.body.appendChild(a);
-  a.click();
+  a.href=url;
+  a.download = CUR_YEAR+'年'+CUR_MONTH+'月シフト_'+period.replace('/','_')+'.csv';
+  document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
+
 
 // 確定シフトページを開いたときExcelボタンを表示（店長のみ）
 updateSocialOption();
