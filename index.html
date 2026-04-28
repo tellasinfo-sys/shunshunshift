@@ -1049,17 +1049,14 @@ window.exportExcel = function(){
   });
 
   // CSV文字列に変換（BOM付きUTF-8でExcelが文字化けしないように）
-  const csv = '﻿' + rows.map(row =>
-    row.map(cell => {
+  const csv = '\uFEFF' + rows.map(function(row){
+    return row.map(function(cell){
       const str = String(cell);
-      // カンマや改行を含む場合はダブルクォートで囲む
-      return str.includes(',') || str.includes('
-') || str.includes('"')
+      return str.includes(',') || str.includes('\n') || str.includes('"')
         ? '"' + str.replace(/"/g, '""') + '"'
         : str;
-    }).join(',')
-  ).join('
-');
+    }).join(',');
+  }).join('\n');
 
   // ダウンロード
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
