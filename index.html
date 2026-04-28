@@ -1105,6 +1105,61 @@ window.exportExcel = function(){
 
 
 // 確定シフトページを開いたときExcelボタンを表示（店長のみ）
+// ===== シフトリセット =====
+window.resetShiftConfirm = function(){
+  const {start,end}=getPeriod();
+  const periodStr=(start.getMonth()+1)+'/'+start.getDate()+'〜'+(end.getMonth()+1)+'/'+end.getDate();
+  document.getElementById('reset-ym-label').textContent=periodStr;
+  document.getElementById('reset-target').value='month';
+  document.getElementById('reset-staff-group').style.display='none';
+  document.getElementById('reset-staff-sel').innerHTML=
+    staffList.map(s=>'<option value="'+s.uid+'">'+s.name+'（'+s.role+'）</option>').join('');
+  document.getElementById('reset-modal').classList.add('open');
+};
+
+document.addEventListener('change', function(e){
+  if(e.target.id==='reset-target'){
+    document.getElementById('reset-staff-group').style.display=
+      e.target.value==='staff'?'block':'none';
+  }
+});
+
+window.executeReset = async function(){
+  const target=document.getElementById('reset-target').value;
+  const prefix=ymShort()+'-';
+  let keysToDelete=[];
+  if(target==='month'){
+    keysToDelete=Object.keys(shiftsCache).filter(k=>k.startsWith(prefix)&&shiftsCache[k]);
+  } else {
+    const staffId=document.getElementById('reset-staff-sel').value;
+    keysToDelete=Object.keys(shiftsCache).filter(k=>k.startsWith(prefix+staffId+'-')&&shiftsCache[k]);
+  }
+  if(keysToDelete.length===0){
+    alert('削除対象のシフトデータがありません。');
+    closeModal('reset-modal');
+    return;
+  }
+  try {
+    const delPromises=keysToDelete.map(k=>{
+      // key形式: ymShort-staffId-offset → 例 "2026-4-uid123-0"
+      const withoutPrefix=k.slice(prefix.length); // "uid123-0"
+      const lastDash=withoutPrefix.lastIndexOf('-');
+      const staffId=withoutPrefix.slice(0,lastDash);
+      const offset=parseInt(withoutPrefix.slice(lastDash+1));
+      return removeShiftDoc(staffId,offset);
+    });
+    await Promise.all(delPromises);
+    const targetLabel=target==='month'
+      ? ym()+'の全シフト'
+      : (staffList.find(s=>s.uid===document.getElementById('reset-staff-sel').value)?.name||'')+'のシフト';
+    await addHistory('change','シフトリセット',targetLabel+'を削除しました（'+keysToDelete.length+'件）');
+    closeModal('reset-modal');
+    alert(keysToDelete.length+'件のシフトをリセットしました。');
+  } catch(e){
+    alert('リセットに失敗しました：'+e.message);
+  }
+};
+
 updateSocialOption();
 </script>
 </body>
