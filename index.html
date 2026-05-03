@@ -250,6 +250,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--mg);color:var(
     <!-- シフト作成（店長のみ） -->
     <div id="page-create" class="page">
       <div class="page-header"><div class="page-title">シフト作成</div><div class="page-sub" id="create-sub"></div></div>
+      <div id="hours-check-panel" style="margin-bottom:12px;display:none"></div>
       <div class="two-col">
         <div class="section">
           <div class="section-header"><span class="section-title">希望休一覧</span></div>
@@ -467,12 +468,12 @@ let historyCache = [];
 let _sid = null, _day = null;
 let unsubShifts = null, unsubWishes = null, unsubHistory = null;
 
-// シフト期間: CUR_YEAR/CUR_MONTH/15 〜 翌月14日
+// シフト期間: CUR_YEAR/CUR_MONTH/16 〜 翌月15日
 function getPeriod(){
-  const start=new Date(CUR_YEAR,CUR_MONTH-1,15);
+  const start=new Date(CUR_YEAR,CUR_MONTH-1,16);
   let ey=CUR_YEAR,em=CUR_MONTH+1;
   if(em>12){em=1;ey++;}
-  return {start,end:new Date(ey,em-1,14)};
+  return {start,end:new Date(ey,em-1,15)};
 }
 function DIM(){
   const {start,end}=getPeriod();
@@ -502,10 +503,28 @@ window.openSidebar = openSidebar;
 window.closeSidebar = closeSidebar;
 
 function parseMinutes(t){ if(!t)return 0; const p=t.split(':'); return parseInt(p[0]||0)*60+parseInt(p[1]||0); }
-function shiftMinutes(s){ if(!s)return 0; const p=s.split('〜'); if(p.length<2)return 0; const a=parseMinutes(p[0].trim()),b=parseMinutes(p[1].trim()); return b>a?b-a:0; }
+// 在席時間（分）：休憩なし
+function shiftTotalMinutes(s){
+  if(!s)return 0;
+  const p=s.split('〜');
+  if(p.length<2)return 0;
+  const a=parseMinutes(p[0].trim()), b=parseMinutes(p[1].trim());
+  return b>a?b-a:0;
+}
+// 休憩時間（分）：6h超〜8h15m未満→45分、8h15m以上→60分、6h以下→0分
+function breakMinutes(totalMin){
+  if(totalMin >= 495) return 60;  // 8時間15分以上 → 1時間休憩
+  if(totalMin > 360) return 45;   // 6時間超〜8時間15分未満 → 45分休憩
+  return 0;                        // 6時間以下 → 休憩なし
+}
+// 実労働時間（分）= 在席時間 - 休憩時間
+function shiftMinutes(s){
+  const total = shiftTotalMinutes(s);
+  return total - breakMinutes(total);
+}
 function calcMonthHours(staffId){
   let total=0;
-  for(let d=1;d<=DIM();d++){ total+=shiftMinutes(shiftsCache[shiftDocId(staffId,d)]); }
+  for(let i=0;i<DIM();i++){ total+=shiftMinutes(shiftsCache[shiftDocId(staffId,i)]); }
   return Math.round(total/6)/10;
 }
 function calcWeekHours(staffId){ return Math.round(calcMonthHours(staffId)/4.3*10)/10; }
@@ -529,6 +548,40 @@ function calcWorkDays(staffId){
     if(shiftsCache[shiftDocId(staffId,i)]) count++;
   }
   return count;
+}
+
+// ===== 月間労働時間ターゲット（店長・社員のみ） =====
+// シフト期間の日数に応じた目標時間
+function getTargetHours(){
+  // 期間の日数（16日〜翌月15日）
+  const days = DIM();
+  if(days <= 28) return 175;
+  if(days === 29) return 182;
+  if(days === 30) return 188;
+  return 194; // 31日
+}
+
+// 店長・社員かどうか
+function isFullTime(staffId){
+  const s = staffList.find(x=>x.uid===staffId);
+  return s && (s.role==='店長' || s.role==='社員');
+}
+
+// 月間実労働時間チェック（店長・社員のみ）※休憩時間控除後
+// returns: { ok, staffName, role, actual, target, diff, status }[]
+function checkTargetHours(){
+  const target = getTargetHours();
+  const results = [];
+  staffList.forEach(s=>{
+    if(!isFullTime(s.uid)) return;
+    const actual = calcMonthHours(s.uid);
+    const diff = Math.round((actual - target)*10)/10;
+    let status = 'ok';
+    if(diff < -1) status = 'under';      // 1時間以上不足
+    else if(diff > 1) status = 'over';   // 1時間以上超過
+    results.push({ uid:s.uid, name:s.name, role:s.role, actual, target, diff, status });
+  });
+  return results;
 }
 
 // ===== 認証 =====
@@ -808,6 +861,40 @@ function renderDash(){
   }).join('') || '<div style="color:var(--tx2);font-size:12px;padding:8px">履歴なし</div>';
 }
 
+// ===== 労働時間チェックパネル（シフト作成画面） =====
+function renderHoursCheckPanel(){
+  const panel = document.getElementById('hours-check-panel');
+  if(!panel) return;
+  const checks = checkTargetHours();
+  if(checks.length === 0){ panel.style.display='none'; return; }
+  panel.style.display='block';
+  const target = getTargetHours();
+
+  const rows = checks.map(c=>{
+    const pct = Math.min(100, Math.round(c.actual/c.target*100));
+    const over = c.status==='over', under = c.status==='under';
+    const fillCls = over?'pf-over':under?'pf-warn':'pf-ok';
+    const sign = c.diff>0?'+':'';
+    const badgeCls = over?'ab-over':under?'ab-warn':'ab-ok';
+    const badgeText = over?'⚠超過':under?'⚠不足':'✓達成';
+    const rk = c.role==='店長'?'mgr':'staff';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">'
+      +'<span class="dot dot-'+rk+'"></span>'
+      +'<span style="min-width:80px;font-size:11px;flex-shrink:0">'+c.name+'</span>'
+      +'<div class="progress-wrap" style="flex:1">'
+      +'<div class="progress-bar"><div class="progress-fill '+fillCls+'" style="width:'+pct+'%"></div></div>'
+      +'<span class="progress-txt" style="min-width:110px">'+c.actual+'h／'+c.target+'h（'+sign+c.diff+'h）</span>'
+      +'</div>'
+      +'<span class="alert-badge '+badgeCls+'">'+badgeText+'</span>'
+      +'</div>';
+  }).join('');
+
+  panel.innerHTML = '<div style="background:var(--card);border:1px solid var(--bd);border-radius:var(--r2);padding:12px">'
+    +'<div style="font-size:12px;font-weight:600;margin-bottom:8px">📊 店長・社員の月間労働時間チェック（目標：'+target+'h／'+DIM()+'日間）</div>'
+    +rows
+    +'</div>';
+}
+
 // ===== 希望提出 =====
 function renderWish(){
   const myId = currentUser?.uid;
@@ -842,6 +929,7 @@ window.submitWish = async function(){
 // ===== シフト作成 =====
 function renderCreate(){
   document.getElementById('create-sub').textContent = ym()+'　希望休を確認しながら出退勤時間を設定してください';
+  renderHoursCheckPanel();
   const totalDays=DIM();
   let w='<thead><tr><th>氏名</th>';
   for(let i=0;i<totalDays;i++){
@@ -863,6 +951,7 @@ function renderCreate(){
   renderCreateCal();
 }
 function renderCreateCal(){
+  renderHoursCheckPanel();
   let h=calHead()+'<tbody>';
   staffList.forEach(s=>{
     const rk=rc(s.role);
@@ -908,17 +997,142 @@ window.deleteShift = async function(){
   closeModal('time-modal');
 };
 window.autoFill = async function(){
-  const pre=['09:00〜14:00','10:00〜15:00','11:00〜16:00','12:00〜17:00','15:00〜20:00','10:00〜17:00','11:00〜20:00'];
+  // シフトパターン定義（実労働時間＝在席時間－休憩時間）
+  // 在席5h(300分)→休憩なし→実労働300分
+  // 在席7h(420分)→休憩45分→実労働375分
+  // 在席8h(480分)→休憩45分→実労働7h15m（8h15m未満なので45分休憩）
+  // 在席9h(540分)→休憩60分→実労働8h00m（8h15m以上なので60分休憩）
+  const patterns=[
+    {t:'09:00〜14:00', min:300},  // 在席5h → 実労働5h00m
+    {t:'10:00〜15:00', min:300},  // 在席5h → 実労働5h00m
+    {t:'11:00〜16:00', min:300},  // 在席5h → 実労働5h00m
+    {t:'12:00〜17:00', min:300},  // 在席5h → 実労働5h00m
+    {t:'15:00〜20:00', min:300},  // 在席5h → 実労働5h00m
+    {t:'10:00〜17:00', min:375},  // 在席7h → 休憩45分 → 実労働6h15m
+    {t:'11:00〜18:00', min:375},  // 在席7h → 休憩45分 → 実労働6h15m
+    {t:'09:00〜17:00', min:435},  // 在席8h → 休憩45分 → 実労働7h15m
+    {t:'10:00〜18:00', min:435},  // 在席8h → 休憩45分 → 実労働7h15m
+    {t:'09:00〜18:00', min:480},  // 在席9h → 休憩60分 → 実労働8h00m
+    {t:'10:00〜19:00', min:480},  // 在席9h → 休憩60分 → 実労働8h00m
+    {t:'08:00〜17:00', min:435},  // 在席9h → 休憩60分 → 実労働8h00m
+  ];
+  // パート用（短時間・休憩なし〜45分）
+  const partPatterns=[
+    {t:'09:00〜14:00', min:300},  // 在席5h → 実労働5h
+    {t:'10:00〜15:00', min:300},  // 在席5h → 実労働5h
+    {t:'11:00〜16:00', min:300},  // 在席5h → 実労働5h
+    {t:'12:00〜17:00', min:300},  // 在席5h → 実労働5h
+    {t:'15:00〜20:00', min:300},  // 在席5h → 実労働5h
+    {t:'10:00〜17:00', min:375},  // 在席7h → 休憩45分 → 実労働6h15m
+    {t:'11:00〜20:00', min:480},  // 在席9h → 休憩60分 → 実労働8h
+  ];
+
   const writes=[];
+
   staffList.forEach(s=>{
+    const full = isFullTime(s.uid);
+    const targetMin = full ? getTargetHours()*60 : null; // 目標時間（分）
+    const wishes = wishesCache[wishDocId(s.uid)]||[];
+
+    // 出勤可能な日のインデックスを収集
+    const available=[];
     for(let i=0;i<DIM();i++){
-      const ng=(wishesCache[wishDocId(s.uid)]||[]).includes(i), dw=getDateByOffset(i).getDay();
-      if(!ng&&dw!==0&&Math.random()>0.35) writes.push(saveShift(s.uid,i,pre[Math.floor(Math.random()*pre.length)]));
+      const dw=getDateByOffset(i).getDay();
+      if(!wishes.includes(i) && dw!==0) available.push(i);
+    }
+
+    if(full && targetMin){
+      // 店長・社員：目標時間に合わせてシフトを組む
+      // まずランダムにシャッフル
+      const shuffled=[...available].sort(()=>Math.random()-0.5);
+      let totalMin=0;
+      const assigned={};
+
+      // 貪欲法：目標時間に近づくようにシフトを割り当て
+      for(const i of shuffled){
+        const remaining = targetMin - totalMin;
+        if(remaining <= 0) break;
+
+        // 残り時間に合わせてパターンを選択
+        let best = null;
+        if(remaining >= 480){
+          // 残りが多い → 長めのシフト優先
+          const candidates = patterns.filter(p=>p.min>=420);
+          best = candidates[Math.floor(Math.random()*candidates.length)];
+        } else if(remaining >= 300){
+          // 残りが中程度 → 残りに近いシフトを選ぶ
+          const sorted = [...patterns].sort((a,b)=>Math.abs(a.min-remaining)-Math.abs(b.min-remaining));
+          best = sorted[0];
+        } else {
+          // 残りが少ない → 最短シフト
+          const sorted = [...patterns].sort((a,b)=>a.min-b.min);
+          best = sorted[0];
+        }
+
+        if(best){
+          assigned[i]=best.t;
+          totalMin+=best.min;
+        }
+      }
+
+      // 目標時間に達していない場合、既存シフトを延長で補完
+      // 既存シフト済み日を確認して追加調整
+      let deficit = targetMin - totalMin;
+      if(deficit > 30){
+        // 未割当の日にも追加
+        const extra = available.filter(i=>!assigned[i]).slice(0,3);
+        for(const i of extra){
+          if(deficit<=0) break;
+          const p = patterns.filter(p=>p.min<=deficit+60)[0]||patterns[0];
+          assigned[i]=p.t;
+          totalMin+=p.min;
+          deficit-=p.min;
+        }
+      }
+
+      // 書き込み
+      for(const [idx,t] of Object.entries(assigned)){
+        writes.push(saveShift(s.uid,parseInt(idx),t));
+      }
+    } else {
+      // パート・アルバイト：ランダム配置（月82h以内）
+      const maxMin = 82*60;
+      let totalMin=0;
+      for(const i of available){
+        if(totalMin>=maxMin) break;
+        if(Math.random()>0.35){
+          const p=partPatterns[Math.floor(Math.random()*partPatterns.length)];
+          if(totalMin+p.min<=maxMin){
+            writes.push(saveShift(s.uid,i,p.t));
+            totalMin+=p.min;
+          }
+        }
+      }
     }
   });
+
   await Promise.all(writes);
+  // 完了後にパネルを更新
+  renderHoursCheckPanel();
 };
 window.confirmShift = async function(){
+  // 店長・社員の月間労働時間チェック
+  const checks = checkTargetHours();
+  const problems = checks.filter(c=>c.status!=='ok');
+
+  if(problems.length > 0){
+    const target = getTargetHours();
+    let msg = '【労働時間の過不足があります】\n目標時間：'+target+'時間（'+DIM()+'日間）\n\n';
+    problems.forEach(c=>{
+      const sign = c.diff > 0 ? '+' : '';
+      const label = c.status==='over' ? '⚠ 超過' : '⚠ 不足';
+      msg += label+' '+c.name+'（'+c.role+'）\n';
+      msg += '　実績：'+c.actual+'h　目標：'+c.target+'h　差：'+sign+c.diff+'h\n\n';
+    });
+    msg += 'このままシフトを確定しますか？';
+    if(!confirm(msg)) return;
+  }
+
   await addHistory('confirm','シフト確定',(currentProfile?.name||'')+' が'+ym()+'の全スタッフシフトを確定しました');
   alert('シフトを確定しました。');
 };
@@ -1030,7 +1244,9 @@ function renderStaff(){
       +'<td>'
       +'<div style="font-size:10px;color:var(--tx2);margin-bottom:3px">出勤'+days+'日</div>'
       +'<div class="progress-wrap"><div class="progress-bar"><div class="progress-fill '+fillCls+'" style="width:'+pct+'%"></div></div>'
-      +'<span class="progress-txt">'+limitLabel+'</span></div></td>'
+      +'<span class="progress-txt">'+limitLabel+'</span></div>'
+      +(isFullTime(s.uid)?'<div style="font-size:10px;margin-top:2px;color:'+(curr<getTargetHours()?'var(--ac2)':curr>getTargetHours()+1?'var(--ac)':'var(--ac3)')+'">目標'+getTargetHours()+'h '+(curr>=getTargetHours()-1&&curr<=getTargetHours()+1?'✓達成':curr<getTargetHours()?'▼'+(Math.round((getTargetHours()-curr)*10)/10)+'h不足':'▲'+(Math.round((curr-getTargetHours())*10)/10)+'h超過')+'</div>':'')
+      +'</td>'
       +'<td>'
       +(function(){
         const rd=calcRestDays(s.uid);
@@ -1087,29 +1303,114 @@ function renderHistory(){
 }
 
 
-// ===== Excel出力（スタッフ別シート形式） =====
-window.exportExcel = function(){
+// ===== Excel出力（スタッフ別シート・色付きXLSX） =====
+window.exportExcel = async function(){
+
+  // ExcelJS を動的ロード（色付きセル対応）
+  if(!window.ExcelJS){
+    await new Promise(function(resolve,reject){
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js';
+      s.onload=resolve; s.onerror=reject;
+      document.head.appendChild(s);
+    });
+  }
+
   const isMgr = currentProfile?.role === '店長';
   const myId = currentUser?.uid;
   const targets = isMgr ? staffList : staffList.filter(s => s.uid === myId);
   const {start, end} = getPeriod();
   const DAYS_JP = ['日','月','火','水','木','金','土'];
-
-  function pad(n){ return String(n).padStart(2,'0'); }
-  function toTimeStr(t){ return pad(t.hour||0)+':'+pad(t.minute||0); }
-
-  // スタッフごとにシートを作るため、全データをワークブック形式でCSVに書く
-  // （ブラウザではXLSX生成ライブラリ不要でCSV出力）
-  // スタッフ別にCSVシートを結合して出力
-  const allCsv = [];
   const period = (start.getMonth()+1)+'/'+start.getDate()+'〜'+(end.getMonth()+1)+'/'+end.getDate();
+  function pad(n){ return String(n).padStart(2,'0'); }
 
-  targets.forEach(s => {
-    allCsv.push(['=== '+s.name+' ／ '+s.role+' ／ 社保：'+s.social+' ===']);
-    allCsv.push([period+' シフト表']);
-    allCsv.push(['日付','曜日','始業','終業','休憩','所定時間','状態']);
+  // リセット日時取得
+  let lastResetTime = null;
+  historyCache.forEach(function(h){
+    if(h.type!=='change'||!h.title||!h.title.includes('シフトリセット')) return;
+    const ts=h.createdAt&&h.createdAt.toDate?h.createdAt.toDate():null;
+    if(ts&&(!lastResetTime||ts>lastResetTime)) lastResetTime=ts;
+  });
 
-    let totalMin=0, workDays=0, restDays=0, wishDays=0, otherDays=0;
+  // 変更履歴マップ（リセット後のみ）
+  const changeMap={};
+  historyCache.forEach(function(h){
+    if(h.type!=='change'||!h.title||!h.detail||h.title.includes('シフトリセット')) return;
+    if(lastResetTime){
+      const ts=h.createdAt&&h.createdAt.toDate?h.createdAt.toDate():null;
+      if(!ts||ts<=lastResetTime) return;
+    }
+    const m=h.title.match(/^(.+?)\s+(\d+\/\d+)変更$/);
+    if(!m) return;
+    const key=m[1].trim()+'_'+m[2];
+    if(!changeMap[key]) changeMap[key]=[];
+    const tm=h.detail.match(/[\d:]+〜[\d:]+/);
+    const ty=h.detail.match(/^(時間変更|出勤追加|出勤削除)/);
+    const re=h.detail.match(/理由：(.+?)）/);
+    let note=ty?ty[1]:'シフト変更';
+    if(tm) note+='→'+tm[0];
+    if(re) note+='（'+re[1]+'）';
+    changeMap[key].push(note);
+  });
+
+  // ワークブック作成
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'ShiftFlow';
+
+  // 色定数
+  const C_BLUE   = 'FFBDD7EE'; // 休日：薄い青
+  const C_YELLOW = 'FFFFFF99'; // シフト変更：黄色
+  const C_HEADER = 'FF1F497D'; // ヘッダー：濃い青
+  const C_TOTAL  = 'FFF2F2F2'; // 合計行：薄いグレー
+  const C_WHITE  = 'FFFFFFFF';
+
+  function cellFill(argb){
+    return { type:'pattern', pattern:'solid', fgColor:{argb} };
+  }
+  function headerFont(){
+    return { name:'Arial', size:10, bold:true, color:{argb:'FFFFFFFF'} };
+  }
+  function bodyFont(bold){
+    return { name:'Arial', size:10, bold:!!bold };
+  }
+  function centerAlign(){
+    return { horizontal:'center', vertical:'middle' };
+  }
+  function thinBorder(){
+    const s={style:'thin'};
+    return {top:s,left:s,bottom:s,right:s};
+  }
+
+  targets.forEach(function(s){
+    const ws = wb.addWorksheet(s.name.replace(/\s/g,'').slice(0,31));
+
+    // 列幅
+    ws.columns=[
+      {width:14},{width:6},{width:10},{width:10},
+      {width:8},{width:10},{width:8},{width:32}
+    ];
+
+    // 行1：タイトル
+    ws.addRow([period+' シフト表　'+s.name+'（'+s.role+'）']);
+    ws.getRow(1).font={name:'Arial',size:12,bold:true};
+    ws.mergeCells('A1:H1');
+    ws.getRow(1).alignment=centerAlign();
+
+    // 行2：空行
+    ws.addRow([]);
+
+    // 行3：ヘッダー
+    const hRow=ws.addRow(['日付','曜日','始業','終業','休憩','所定時間','状態','備考（シフト変更）']);
+    hRow.eachCell(function(cell){
+      cell.fill=cellFill(C_HEADER);
+      cell.font=headerFont();
+      cell.alignment=centerAlign();
+      cell.border=thinBorder();
+    });
+    hRow.height=18;
+
+    let totalMin=0,workDays=0,restDays=0,wishDays=0,otherDays=0;
+
     for(let i=0;i<DIM();i++){
       const dt=getDateByOffset(i);
       const dw=dt.getDay();
@@ -1117,43 +1418,84 @@ window.exportExcel = function(){
       const dwStr=DAYS_JP[dw];
       const shift=shiftsCache[shiftDocId(s.uid,i)];
       const isNg=(wishesCache[wishDocId(s.uid)]||[]).includes(i);
+      const changes=changeMap[s.name+'_'+dateStr]||[];
+      const changeNote=changes.join(' / ');
+      const hasChange=changes.length>0;
+
+      let rowData, bgColor;
 
       if(shift){
         const parts=shift.split('〜');
         const sh=parseInt(parts[0].split(':')[0]),sm=parseInt(parts[0].split(':')[1]);
         const eh=parseInt(parts[1].split(':')[0]),em=parseInt(parts[1].split(':')[1]);
         const tot=(eh*60+em)-(sh*60+sm);
-        const brk=tot>=480?45:0;
+        const brk=tot>=495?60:tot>360?45:0;
         const work=tot-brk;
-        const wh=Math.floor(work/60), wm=work%60;
-        const bh=Math.floor(brk/60), bm=brk%60;
         totalMin+=work; workDays++;
-        allCsv.push([dateStr,dwStr,parts[0],parts[1],pad(bh)+':'+pad(bm),pad(wh)+':'+pad(wm),'出勤']);
+        rowData=[
+          dateStr,dwStr,parts[0],parts[1],
+          pad(Math.floor(brk/60))+':'+pad(brk%60),
+          pad(Math.floor(work/60))+':'+pad(work%60),
+          '出勤',changeNote
+        ];
+        // 色：シフト変更あり→黄、土→水色、日→薄オレ、通常→白
+        bgColor = hasChange ? C_YELLOW : C_WHITE;
       } else {
         restDays++;
         if(isNg) wishDays++; else otherDays++;
-        allCsv.push([dateStr,dwStr,'','','','',isNg?'希望休':'休']);
+        rowData=[dateStr,dwStr,'','','','',isNg?'希望休':'休',changeNote];
+        // 色：休日→青（シフト変更もあれば黄優先）
+        bgColor = hasChange ? C_YELLOW : C_BLUE;
       }
+
+      const dataRow = ws.addRow(rowData);
+      dataRow.height=16;
+      dataRow.eachCell(function(cell){
+        cell.fill=cellFill(bgColor);
+        cell.font=bodyFont();
+        cell.alignment=centerAlign();
+        cell.border=thinBorder();
+      });
+      // 曜日の文字色（土→青、日→赤）
+      const dwCell=dataRow.getCell(2);
+      if(dw===6) dwCell.font={...bodyFont(),color:{argb:'FF0070C0'}};
+      if(dw===0) dwCell.font={...bodyFont(),color:{argb:'FFFF0000'}};
+      // 備考列は左揃え
+      dataRow.getCell(8).alignment={horizontal:'left',vertical:'middle'};
     }
-    const th=Math.floor(totalMin/60), tm=totalMin%60;
-    allCsv.push(['合計',workDays+'日出勤','','','',pad(th)+':'+pad(tm),'']);
-    allCsv.push(['休日合計',restDays+'日','希望休：'+wishDays+'日','その他：'+otherDays+'日','','','']);
-    allCsv.push([]); // 空行
+
+    // 空行
+    ws.addRow([]);
+
+    // 合計行
+    const th=Math.floor(totalMin/60),tm2=totalMin%60;
+    const totRow=ws.addRow(['合計',workDays+'日出勤','','','',pad(th)+':'+pad(tm2),'','']);
+    totRow.eachCell(function(cell){
+      cell.fill=cellFill(C_TOTAL);
+      cell.font=bodyFont(true);
+      cell.alignment=centerAlign();
+      cell.border=thinBorder();
+    });
+
+    const restRow=ws.addRow(['休日合計',restDays+'日','希望休：'+wishDays+'日','その他：'+otherDays+'日','','','','']);
+    restRow.eachCell(function(cell){
+      cell.fill=cellFill(C_TOTAL);
+      cell.font=bodyFont(true);
+      cell.alignment=centerAlign();
+      cell.border=thinBorder();
+    });
+
+    // ウィンドウ枠固定（ヘッダー行3まで）
+    ws.views=[{state:'frozen',ySplit:3}];
   });
 
-  const csv = '\uFEFF' + allCsv.map(function(row){
-    return row.map(function(cell){
-      const str=String(cell===null||cell===undefined?'':cell);
-      return str.includes(',')||str.includes('\n')||str.includes('"')
-        ? '"'+str.replace(/"/g,'""')+'"' : str;
-    }).join(',');
-  }).join('\n');
-
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  // バッファ→Blob→ダウンロード
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href=url;
-  a.download = CUR_YEAR+'年'+CUR_MONTH+'月シフト_'+period.replace('/','_')+'.csv';
+  a.download=CUR_YEAR+'年'+CUR_MONTH+'月シフト_'+period.replace(/\//g,'_')+'.xlsx';
   document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
