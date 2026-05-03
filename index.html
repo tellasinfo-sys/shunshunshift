@@ -510,6 +510,27 @@ function calcMonthHours(staffId){
 }
 function calcWeekHours(staffId){ return Math.round(calcMonthHours(staffId)/4.3*10)/10; }
 
+// 休日・出勤日カウント
+function calcRestDays(staffId){
+  let total=0, wish=0, other=0;
+  const myWishes=wishesCache[wishDocId(staffId)]||[];
+  for(let i=0;i<DIM();i++){
+    const shift=shiftsCache[shiftDocId(staffId,i)];
+    if(!shift){
+      total++;
+      if(myWishes.includes(i)) wish++; else other++;
+    }
+  }
+  return {total, wish, other};
+}
+function calcWorkDays(staffId){
+  let count=0;
+  for(let i=0;i<DIM();i++){
+    if(shiftsCache[shiftDocId(staffId,i)]) count++;
+  }
+  return count;
+}
+
 // ===== 認証 =====
 window.doLogin = async function(){
   const email = document.getElementById('login-email').value.trim();
@@ -765,13 +786,15 @@ function renderDash(){
     const curr=isPN?calcMonthHours(s.uid):calcWeekHours(s.uid), max=isPN?82:44;
     const pct=Math.min(100,Math.round(curr/max*100)), over=curr>max, warn=curr>max*0.9;
     if(!isMgr && s.uid!==myId) return null;
-    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--bd)">'
+    const rd=calcRestDays(s.uid);
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">'
       +'<span class="dot dot-'+rc(s.role)+'"></span>'
       +'<span style="min-width:65px;font-size:11px;flex-shrink:0">'+s.name.split(' ')[0]+'</span>'
       +'<div class="progress-wrap" style="flex:1">'
       +'<div class="progress-bar"><div class="progress-fill '+(over?'pf-over':warn?'pf-warn':'pf-ok')+'" style="width:'+pct+'%"></div></div>'
       +'<span class="progress-txt">'+(isPN?'月'+curr+'h/82h':'週換算'+curr+'h/44h')+'</span></div>'
       +'<span class="alert-badge '+(over?'ab-over':warn?'ab-warn':'ab-ok')+'">'+(over?'超過':warn?'注意':'正常')+'</span>'
+      +'<span style="font-size:10px;color:var(--tx2);white-space:nowrap;margin-left:4px">休'+rd.total+'日（希望休'+rd.wish+'・その他'+rd.other+'）</span>'
       +'</div>';
   }).filter(Boolean).join('');
   document.getElementById('alert-list').innerHTML = alerts||'<div style="color:var(--tx2);font-size:12px;padding:8px">データなし</div>';
@@ -913,10 +936,32 @@ function renderShift(){
   const notice=document.getElementById('my-shift-notice');
   if(!isMgr){
     notice.style.display='block';
-    const cnt=Object.entries(shiftsCache).filter(([k,v])=>k.startsWith(ymShort()+'-'+myId+'-')&&v).length;
-    notice.innerHTML='<div style="font-size:12px;font-weight:500;margin-bottom:4px">あなたのシフト（'+(currentProfile?.name||'')+'）</div>'
-      +'<div style="font-size:11px;color:var(--tx2)">今月の出勤：'+cnt+'日　／　合計：'+calcMonthHours(myId)+'h</div>';
-  } else notice.style.display='none';
+    const cnt=calcWorkDays(myId);
+    const rd=calcRestDays(myId);
+    notice.innerHTML='<div style="font-size:12px;font-weight:500;margin-bottom:6px">あなたのシフト（'+(currentProfile?.name||'')+'）</div>'
+      +'<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--tx2)">'
+      +'<span>出勤：<b style="color:var(--tx)">'+cnt+'日</b></span>'
+      +'<span>合計時間：<b style="color:var(--tx)">'+calcMonthHours(myId)+'h</b></span>'
+      +'<span>休日：<b style="color:var(--tx)">'+rd.total+'日</b>（希望休'+rd.wish+'日／その他'+rd.other+'日）</span>'
+      +'</div>';
+  } else {
+    notice.style.display='block';
+    notice.style.borderColor='rgba(255,255,255,0.08)';
+    notice.style.background='rgba(255,255,255,0.02)';
+    // 店長向け：全スタッフの休日サマリーを表示
+    const rows=staffList.map(s=>{
+      const wd=calcWorkDays(s.uid), rd=calcRestDays(s.uid);
+      const rk=rc(s.role);
+      return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">'
+        +'<span class="dot dot-'+rk+'"></span>'
+        +'<span style="min-width:80px;font-size:11px">'+s.name+'</span>'
+        +'<span style="font-size:11px;color:var(--tx2)">出勤<b style="color:var(--tx);margin:0 2px">'+wd+'</b>日</span>'
+        +'<span style="font-size:11px;color:var(--tx2)">休日<b style="color:var(--ac3);margin:0 2px">'+rd.total+'</b>日'
+        +'<span style="font-size:10px">（希望休'+rd.wish+'・その他'+rd.other+'）</span></span>'
+        +'</div>';
+    }).join('');
+    notice.innerHTML='<div style="font-size:12px;font-weight:500;margin-bottom:8px">'+ym()+'　出勤・休日サマリー</div>'+rows;
+  }
   let h=calHead()+'<tbody>';
   (isMgr?staffList:staffList.filter(s=>s.uid===myId)).forEach(s=>{
     const rk=rc(s.role);
@@ -965,7 +1010,7 @@ window.applyChange = async function(){
 
 // ===== スタッフ管理 =====
 function renderStaff(){
-  const thead='<thead><tr><th>氏名</th><th>区分</th><th>社保</th><th>'+ym()+'の勤務時間</th><th>状態</th></tr></thead>';
+  const thead='<thead><tr><th>氏名</th><th>区分</th><th>社保</th><th>'+ym()+'の勤務時間</th><th>休日数</th><th>状態</th></tr></thead>';
   const rows=staffList.map(function(s){
     const isPN=s.role==='パート・アルバイト'&&s.social==='非対象';
     const limit=isPN?82:44;
@@ -986,6 +1031,13 @@ function renderStaff(){
       +'<div style="font-size:10px;color:var(--tx2);margin-bottom:3px">出勤'+days+'日</div>'
       +'<div class="progress-wrap"><div class="progress-bar"><div class="progress-fill '+fillCls+'" style="width:'+pct+'%"></div></div>'
       +'<span class="progress-txt">'+limitLabel+'</span></div></td>'
+      +'<td>'
+      +(function(){
+        const rd=calcRestDays(s.uid);
+        return '<div style="font-size:11px;font-weight:500;color:var(--ac3)">'+rd.total+'日</div>'
+          +'<div style="font-size:10px;color:var(--tx2)">希望'+rd.wish+'／その他'+rd.other+'</div>';
+      })()
+      +'</td>'
       +'<td><span class="alert-badge '+badgeCls+'">'+badgeText+'</span></td>'
       +'</tr>';
   });
@@ -1057,7 +1109,7 @@ window.exportExcel = function(){
     allCsv.push([period+' シフト表']);
     allCsv.push(['日付','曜日','始業','終業','休憩','所定時間','状態']);
 
-    let totalMin=0, workDays=0;
+    let totalMin=0, workDays=0, restDays=0, wishDays=0, otherDays=0;
     for(let i=0;i<DIM();i++){
       const dt=getDateByOffset(i);
       const dw=dt.getDay();
@@ -1078,11 +1130,14 @@ window.exportExcel = function(){
         totalMin+=work; workDays++;
         allCsv.push([dateStr,dwStr,parts[0],parts[1],pad(bh)+':'+pad(bm),pad(wh)+':'+pad(wm),'出勤']);
       } else {
+        restDays++;
+        if(isNg) wishDays++; else otherDays++;
         allCsv.push([dateStr,dwStr,'','','','',isNg?'希望休':'休']);
       }
     }
     const th=Math.floor(totalMin/60), tm=totalMin%60;
-    allCsv.push(['合計',workDays+'日','','','',pad(th)+':'+pad(tm),'']);
+    allCsv.push(['合計',workDays+'日出勤','','','',pad(th)+':'+pad(tm),'']);
+    allCsv.push(['休日合計',restDays+'日','希望休：'+wishDays+'日','その他：'+otherDays+'日','','','']);
     allCsv.push([]); // 空行
   });
 
